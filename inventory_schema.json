@@ -1,0 +1,177 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "cve-analyzer-inventory/v1",
+  "title": "CVE Analyzer Environment Inventory",
+  "description": "Schema for the environment inventory file produced by the Ansible collector and consumed by cve_analyzer.py --inventory.",
+  "type": "object",
+  "required": ["schema_version", "generated_at", "hosts"],
+  "properties": {
+
+    "schema_version": {
+      "type": "string",
+      "description": "Schema version for forward-compatibility checks. Currently '1.0'.",
+      "const": "1.0"
+    },
+
+    "generated_at": {
+      "type": "string",
+      "format": "date-time",
+      "description": "ISO-8601 UTC timestamp when this inventory was generated."
+    },
+
+    "collector": {
+      "type": "object",
+      "description": "Metadata about the tool that generated this inventory.",
+      "properties": {
+        "tool":            { "type": "string", "description": "Collector name, e.g. 'ansible-cve-inventory'" },
+        "version":         { "type": "string", "description": "Collector version." },
+        "playbook":        { "type": "string", "description": "Ansible playbook filename." },
+        "ansible_version": { "type": "string" }
+      }
+    },
+
+    "hosts": {
+      "type": "array",
+      "description": "One entry per scanned host.",
+      "items": {
+        "type": "object",
+        "required": ["hostname", "platform", "components"],
+        "properties": {
+
+          "hostname": {
+            "type": "string",
+            "description": "Short hostname as returned by `hostname -s`."
+          },
+          "fqdn": {
+            "type": "string",
+            "description": "Fully-qualified domain name."
+          },
+          "ip_addresses": {
+            "type": "array",
+            "items": { "type": "string" },
+            "description": "All non-loopback IPv4/IPv6 addresses."
+          },
+
+          "platform": {
+            "type": "object",
+            "required": ["type", "version", "major"],
+            "description": "Operating system / container platform information.",
+            "properties": {
+              "type": {
+                "type": "string",
+                "enum": ["RHEL", "OpenShift"],
+                "description": "Broad platform family."
+              },
+              "version": {
+                "type": "string",
+                "description": "Full version string, e.g. '8.8', '9.2', '4.14'."
+              },
+              "major": {
+                "type": "integer",
+                "description": "Major version integer: 8 or 9 for RHEL, 4 for OCP."
+              },
+              "kernel": {
+                "type": "string",
+                "description": "Kernel version from `uname -r`."
+              },
+              "arch": {
+                "type": "string",
+                "enum": ["x86_64", "aarch64", "ppc64le", "s390x"],
+                "description": "CPU architecture."
+              }
+            }
+          },
+
+          "components": {
+            "type": "array",
+            "description": "Every software component discovered on this host.",
+            "items": {
+              "type": "object",
+              "required": ["name", "type", "detection_confidence"],
+              "properties": {
+
+                "name": {
+                  "type": "string",
+                  "description": "Package / component name. For RPMs this is the RPM Name field. For JARs prefer artifact_id. For binaries use the filename."
+                },
+                "version": {
+                  "type": ["string", "null"],
+                  "description": "Version string. null or omitted when version cannot be determined."
+                },
+                "type": {
+                  "type": "string",
+                  "enum": ["rpm", "python", "jar", "node", "go_module", "binary", "ruby_gem"],
+                  "description": "How this component was discovered."
+                },
+                "path": {
+                  "type": ["string", "null"],
+                  "description": "Absolute filesystem path. null for RPM packages (owned by RPM database)."
+                },
+                "detection_confidence": {
+                  "type": "string",
+                  "enum": ["high", "medium", "low"],
+                  "description": "Confidence in the completeness and accuracy of the collected metadata. high=RPM (authoritative), medium=pip/JAR with version, low=binary with string-extracted version or no version."
+                },
+
+                "rpm_fields": {
+                  "type": "object",
+                  "description": "Present only when type='rpm'.",
+                  "properties": {
+                    "nevra":   { "type": "string", "description": "Full NEVRA string, e.g. 'curl-7.76.1-26.el9_2.2.x86_64'." },
+                    "release": { "type": "string", "description": "RPM Release field, e.g. '26.el9_2.2'." },
+                    "epoch":   { "type": "string", "description": "RPM Epoch field, '0' when absent." },
+                    "arch":    { "type": "string" }
+                  }
+                },
+
+                "jar_fields": {
+                  "type": "object",
+                  "description": "Present only when type='jar'.",
+                  "properties": {
+                    "group_id":    { "type": "string", "description": "Maven groupId, e.g. 'org.apache.logging.log4j'." },
+                    "artifact_id": { "type": "string", "description": "Maven artifactId, e.g. 'log4j-core'." }
+                  }
+                },
+
+                "binary_fields": {
+                  "type": "object",
+                  "description": "Present only when type='binary' or type='go_module'.",
+                  "properties": {
+                    "linked_libs": {
+                      "type": "array",
+                      "items": { "type": "string" },
+                      "description": "Shared libraries from `ldd`, e.g. ['libssl.so.1.1', 'libcrypto.so.1.1']."
+                    },
+                    "version_string": {
+                      "type": "string",
+                      "description": "Raw version output from --version or strings extraction."
+                    }
+                  }
+                }
+              }
+            }
+          },
+
+          "scan_metadata": {
+            "type": "object",
+            "description": "Per-host collection statistics for auditability.",
+            "properties": {
+              "scan_duration_s":   { "type": "number" },
+              "rpm_count":         { "type": "integer" },
+              "jar_count":         { "type": "integer" },
+              "python_pkg_count":  { "type": "integer" },
+              "node_pkg_count":    { "type": "integer" },
+              "binary_count":      { "type": "integer" },
+              "scan_errors":       {
+                "type": "array",
+                "items": { "type": "string" },
+                "description": "Non-fatal errors encountered during collection."
+              }
+            }
+          }
+
+        }
+      }
+    }
+  }
+}

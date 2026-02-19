@@ -1,0 +1,348 @@
+{
+  "schema_version": "1.0",
+  "generated_at": "2025-02-19T08:00:00Z",
+  "collector": {
+    "tool": "ansible-cve-inventory",
+    "version": "1.0.0",
+    "playbook": "inventory_collector.yml",
+    "ansible_version": "2.16.3"
+  },
+  "hosts": [
+
+    {
+      "hostname": "rhel8-app-01",
+      "fqdn": "rhel8-app-01.example.com",
+      "ip_addresses": ["10.0.1.10"],
+      "platform": {
+        "type": "RHEL",
+        "version": "8.8",
+        "major": 8,
+        "kernel": "4.18.0-477.15.1.el8_8.x86_64",
+        "arch": "x86_64"
+      },
+      "components": [
+        {
+          "name": "curl",
+          "version": "7.61.1",
+          "type": "rpm",
+          "path": null,
+          "detection_confidence": "high",
+          "rpm_fields": {
+            "nevra": "curl-7.61.1-30.el8.x86_64",
+            "release": "30.el8",
+            "epoch": "0",
+            "arch": "x86_64"
+          }
+        },
+        {
+          "name": "openssl",
+          "version": "1.1.1k",
+          "type": "rpm",
+          "path": null,
+          "detection_confidence": "high",
+          "rpm_fields": {
+            "nevra": "openssl-1.1.1k-7.el8_6.x86_64",
+            "release": "7.el8_6",
+            "epoch": "1",
+            "arch": "x86_64"
+          }
+        },
+        {
+          "name": "openssh",
+          "version": "8.0p1",
+          "type": "rpm",
+          "path": null,
+          "detection_confidence": "high",
+          "rpm_fields": {
+            "nevra": "openssh-8.0p1-13.el8.x86_64",
+            "release": "13.el8",
+            "epoch": "0",
+            "arch": "x86_64"
+          }
+        },
+        {
+          "name": "glibc",
+          "version": "2.28",
+          "type": "rpm",
+          "path": null,
+          "detection_confidence": "high",
+          "rpm_fields": {
+            "nevra": "glibc-2.28-225.el8.x86_64",
+            "release": "225.el8",
+            "epoch": "0",
+            "arch": "x86_64"
+          }
+        },
+        {
+          "name": "log4j-core",
+          "version": "2.14.1",
+          "type": "jar",
+          "path": "/opt/myapp/lib/log4j-core-2.14.1.jar",
+          "detection_confidence": "medium",
+          "jar_fields": {
+            "group_id": "org.apache.logging.log4j",
+            "artifact_id": "log4j-core"
+          }
+        },
+        {
+          "name": "log4j-api",
+          "version": "2.14.1",
+          "type": "jar",
+          "path": "/opt/myapp/lib/log4j-api-2.14.1.jar",
+          "detection_confidence": "medium",
+          "jar_fields": {
+            "group_id": "org.apache.logging.log4j",
+            "artifact_id": "log4j-api"
+          }
+        },
+        {
+          "name": "commons-text",
+          "version": "1.9.0",
+          "type": "jar",
+          "path": "/opt/myapp/lib/commons-text-1.9.0.jar",
+          "detection_confidence": "medium",
+          "jar_fields": {
+            "group_id": "org.apache.commons",
+            "artifact_id": "commons-text"
+          }
+        },
+        {
+          "name": "spring-core",
+          "version": "5.3.18",
+          "type": "jar",
+          "path": "/opt/myapp/lib/spring-core-5.3.18.jar",
+          "detection_confidence": "medium",
+          "jar_fields": {
+            "group_id": "org.springframework",
+            "artifact_id": "spring-core"
+          }
+        },
+        {
+          "name": "requests",
+          "version": "2.25.1",
+          "type": "python",
+          "path": "/usr/lib/python3.6/site-packages/requests",
+          "detection_confidence": "medium"
+        },
+        {
+          "name": "urllib3",
+          "version": "1.26.5",
+          "type": "python",
+          "path": "/usr/lib/python3.6/site-packages/urllib3",
+          "detection_confidence": "medium"
+        },
+        {
+          "name": "myapp-worker",
+          "version": "2.3.1",
+          "type": "binary",
+          "path": "/opt/myapp/bin/myapp-worker",
+          "detection_confidence": "low",
+          "binary_fields": {
+            "linked_libs": ["libssl.so.1.1", "libcrypto.so.1.1", "libz.so.1", "libpthread.so.0"],
+            "version_string": "myapp-worker 2.3.1 (built 2023-08-15)"
+          }
+        }
+      ],
+      "scan_metadata": {
+        "scan_duration_s": 47.3,
+        "rpm_count": 4,
+        "jar_count": 4,
+        "python_pkg_count": 2,
+        "node_pkg_count": 0,
+        "binary_count": 1,
+        "scan_errors": []
+      }
+    },
+
+    {
+      "hostname": "rhel9-app-01",
+      "fqdn": "rhel9-app-01.example.com",
+      "ip_addresses": ["10.0.1.11"],
+      "platform": {
+        "type": "RHEL",
+        "version": "9.2",
+        "major": 9,
+        "kernel": "5.14.0-284.30.1.el9_2.x86_64",
+        "arch": "x86_64"
+      },
+      "components": [
+        {
+          "name": "curl",
+          "version": "7.76.1",
+          "type": "rpm",
+          "path": null,
+          "detection_confidence": "high",
+          "rpm_fields": {
+            "nevra": "curl-7.76.1-26.el9_2.2.x86_64",
+            "release": "26.el9_2.2",
+            "epoch": "0",
+            "arch": "x86_64"
+          }
+        },
+        {
+          "name": "openssl",
+          "version": "3.0.7",
+          "type": "rpm",
+          "path": null,
+          "detection_confidence": "high",
+          "rpm_fields": {
+            "nevra": "openssl-3.0.7-18.el9_2.x86_64",
+            "release": "18.el9_2",
+            "epoch": "1",
+            "arch": "x86_64"
+          }
+        },
+        {
+          "name": "openssh",
+          "version": "8.7p1",
+          "type": "rpm",
+          "path": null,
+          "detection_confidence": "high",
+          "rpm_fields": {
+            "nevra": "openssh-8.7p1-34.el9_2.4.x86_64",
+            "release": "34.el9_2.4",
+            "epoch": "0",
+            "arch": "x86_64"
+          }
+        },
+        {
+          "name": "log4j-core",
+          "version": "2.17.2",
+          "type": "jar",
+          "path": "/opt/webapp/lib/log4j-core-2.17.2.jar",
+          "detection_confidence": "medium",
+          "jar_fields": {
+            "group_id": "org.apache.logging.log4j",
+            "artifact_id": "log4j-core"
+          }
+        },
+        {
+          "name": "commons-text",
+          "version": "1.10.0",
+          "type": "jar",
+          "path": "/opt/webapp/lib/commons-text-1.10.0.jar",
+          "detection_confidence": "medium",
+          "jar_fields": {
+            "group_id": "org.apache.commons",
+            "artifact_id": "commons-text"
+          }
+        },
+        {
+          "name": "requests",
+          "version": "2.31.0",
+          "type": "python",
+          "path": "/usr/lib/python3.9/site-packages/requests",
+          "detection_confidence": "medium"
+        },
+        {
+          "name": "datadog-agent",
+          "version": "7.45.0",
+          "type": "binary",
+          "path": "/opt/datadog-agent/bin/agent",
+          "detection_confidence": "low",
+          "binary_fields": {
+            "linked_libs": ["libssl.so.3", "libcrypto.so.3"],
+            "version_string": "Agent 7.45.0 - Commit: abc1234"
+          }
+        }
+      ],
+      "scan_metadata": {
+        "scan_duration_s": 38.1,
+        "rpm_count": 3,
+        "jar_count": 2,
+        "python_pkg_count": 1,
+        "node_pkg_count": 0,
+        "binary_count": 1,
+        "scan_errors": []
+      }
+    },
+
+    {
+      "hostname": "rhel8-db-01",
+      "fqdn": "rhel8-db-01.example.com",
+      "ip_addresses": ["10.0.2.10"],
+      "platform": {
+        "type": "RHEL",
+        "version": "8.9",
+        "major": 8,
+        "kernel": "4.18.0-513.9.1.el8_9.x86_64",
+        "arch": "x86_64"
+      },
+      "components": [
+        {
+          "name": "openssl",
+          "version": "1.1.1k",
+          "type": "rpm",
+          "path": null,
+          "detection_confidence": "high",
+          "rpm_fields": {
+            "nevra": "openssl-1.1.1k-9.el8_7.x86_64",
+            "release": "9.el8_7",
+            "epoch": "1",
+            "arch": "x86_64"
+          }
+        },
+        {
+          "name": "openssh",
+          "version": "8.0p1",
+          "type": "rpm",
+          "path": null,
+          "detection_confidence": "high",
+          "rpm_fields": {
+            "nevra": "openssh-8.0p1-19.el8_8.0.3.x86_64",
+            "release": "19.el8_8.0.3",
+            "epoch": "0",
+            "arch": "x86_64"
+          }
+        },
+        {
+          "name": "mysql",
+          "version": "8.0.36",
+          "type": "rpm",
+          "path": null,
+          "detection_confidence": "high",
+          "rpm_fields": {
+            "nevra": "mysql-8.0.36-1.el8.x86_64",
+            "release": "1.el8",
+            "epoch": "0",
+            "arch": "x86_64"
+          }
+        },
+        {
+          "name": "openssl",
+          "version": "1.0.2k",
+          "type": "binary",
+          "path": "/opt/legacy-app/bin/openssl",
+          "detection_confidence": "low",
+          "binary_fields": {
+            "linked_libs": [],
+            "version_string": "OpenSSL 1.0.2k  26 Jan 2017"
+          }
+        },
+        {
+          "name": "legacy-etl",
+          "version": null,
+          "type": "binary",
+          "path": "/opt/legacy-app/bin/etl-worker",
+          "detection_confidence": "low",
+          "binary_fields": {
+            "linked_libs": ["libssl.so.1.0.2k", "libcrypto.so.1.0.2k", "libmysqlclient.so.21"],
+            "version_string": null
+          }
+        }
+      ],
+      "scan_metadata": {
+        "scan_duration_s": 52.7,
+        "rpm_count": 3,
+        "jar_count": 0,
+        "python_pkg_count": 0,
+        "node_pkg_count": 0,
+        "binary_count": 2,
+        "scan_errors": [
+          "Could not extract version from /opt/legacy-app/bin/etl-worker: --version flag not recognised"
+        ]
+      }
+    }
+
+  ]
+}
