@@ -25,29 +25,11 @@ import sys
 import csv
 import re
 import time
+import json
 import argparse
-import requests
-import requests.auth
+import subprocess
 from datetime import datetime
-from urllib.parse import urlparse, urlunparse, quote as _url_quote
-
-# Optional NTLM proxy auth via requests-ntlm2.
-#
-# The correct way to do NTLM on HTTPS CONNECT tunnels is through
-# HttpNtlmAdapter, NOT session.auth.  HttpNtlmAdapter patches
-# pool_classes_by_scheme so that VerifiedHTTPSConnection._tunnel() performs
-# the full NTLM negotiate → challenge → authenticate handshake at the raw
-# socket level, before the TLS tunnel is opened.
-#
-# session.auth = HttpNtlmAuth(...) is for server-side 401 auth only; it never
-# fires for the CONNECT tunnel because urllib3 raises OSError/ProxyError before
-# requests' response hooks can intercept the 407.
-try:
-    from requests_ntlm2 import HttpNtlmAdapter as _HttpNtlmAdapter
-    _NTLM_AVAILABLE = True
-except ImportError:
-    _HttpNtlmAdapter = None   # satisfies static analysis; guarded by _NTLM_AVAILABLE
-    _NTLM_AVAILABLE = False
+from urllib.parse import urlencode
 
 # ── API Endpoints ──────────────────────────────────────────────────────────────
 RH_CVE_API          = "https://access.redhat.com/hydra/rest/securitydata/cve/{}.json"
@@ -86,30 +68,9 @@ _last_nist_call: float = 0.0
 NIST_DELAY_NO_KEY   = 6.5   # 5 req / 30 s without API key
 NIST_DELAY_WITH_KEY = 0.7   # 50 req / 30 s with key
 
-# ── HTTP session ───────────────────────────────────────────────────────────────
-# Single shared session — proxy and auth are configured once via configure_proxy()
-# before any requests are made.
-_SESSION: requests.Session = requests.Session()
-_SESSION.headers["User-Agent"] = "cve-analyzer/1.0"
-
-
-def _proxy_url_with_creds(url: str, user: str, pw: str) -> str:
-    """
-    Embed credentials into a proxy URL so urllib3's ProxyManager sends them on
-    the CONNECT tunnel request.
-
-    This is the only path that works for HTTPS targets: session.auth is applied
-    to the inner (encrypted) request after the tunnel opens, which the proxy
-    never sees.  Credentials in the URL are read by urllib3 before CONNECT.
-    """
-    parsed = urlparse(url)
-    safe_user = _url_quote(user, safe="")
-    safe_pw   = _url_quote(pw,   safe="")
-    host = parsed.hostname or ""
-    netloc = f"{safe_user}:{safe_pw}@{host}"
-    if parsed.port:
-        netloc += f":{parsed.port}"
-    return urlunparse(parsed._replace(netloc=netloc))
+# ── Proxy curl args ────────────────────────────────────────────────────────────
+# Built once by configure_proxy(); prepended to every curl invocation.
+_PROXY_CURL_ARGS: list[str] = []
 
 
 def configure_proxy(
@@ -119,7 +80,7 @@ def configure_proxy(
     password: str = "",
 ) -> None:
     """
-    Configure the shared HTTP session for proxy access.
+    Build the curl proxy arguments used for every HTTP request.
 
     Parameters are resolved in this order: CLI argument → environment variable.
 
@@ -135,17 +96,12 @@ def configure_proxy(
 
     Authentication types
     ─────────────────────
-    basic   HTTP Basic proxy authentication.
-            Credentials are embedded in the proxy URL so urllib3 sends them
-            on the CONNECT tunnel (the only path that works for HTTPS targets).
-    digest  HTTP Digest proxy authentication.
-            Credentials are embedded as basic for the CONNECT tunnel (digest
-            challenge-response over CONNECT is not supported by urllib3).
-    ntlm    Microsoft NTLM — requires the requests-ntlm2 package.
-            Install: pip install requests-ntlm2
-            requests-ntlm2 patches urllib3 to perform the NTLM handshake on
-            the CONNECT tunnel.  Falls back to basic if the package is absent.
+    basic   --proxy-basic  (default)
+    digest  --proxy-digest
+    ntlm    --proxy-ntlm   (uses the OS curl built-in NTLM stack; no Python
+                            library issues with OpenSSL MD4 or CONNECT tunnels)
     """
+    global _PROXY_CURL_ARGS
     url  = proxy_url or os.environ.get("HTTPS_PROXY") or os.environ.get("HTTP_PROXY") or ""
     if not url:
         return
@@ -154,58 +110,87 @@ def configure_proxy(
     user = username or os.environ.get("CVE_PROXY_USERNAME", "")
     pw   = password or os.environ.get("CVE_PROXY_PASSWORD", "")
 
+    _PROXY_CURL_ARGS = ["--proxy", url]
+
     if not user:
-        _SESSION.proxies.update({"http": url, "https": url})
         print(f"[INFO] Proxy: {url} (no authentication)", file=sys.stderr)
         return
 
+    _PROXY_CURL_ARGS += ["--proxy-user", f"{user}:{pw}"]
+
     if auth == "ntlm":
-        if not _NTLM_AVAILABLE:
-            print(
-                "[WARN] NTLM proxy auth requested but requests-ntlm2 is not installed.\n"
-                "       Install: pip install requests-ntlm2\n"
-                "       requests-ntlm2 mounts an adapter that performs the full NTLM\n"
-                "       negotiate→challenge→authenticate handshake on the HTTPS CONNECT\n"
-                "       tunnel at the socket level — the only approach that works.\n"
-                "       Falling back to Basic (will fail if the proxy requires NTLM only).",
-                file=sys.stderr,
-            )
-            authed_url = _proxy_url_with_creds(url, user, pw)
-            _SESSION.proxies.update({"http": authed_url, "https": authed_url})
-            print(f"[INFO] Proxy: {url} (Basic fallback, user={user})", file=sys.stderr)
-        else:
-            # HttpNtlmAdapter patches pool_classes_by_scheme so that
-            # VerifiedHTTPSConnection._tunnel() performs the NTLM handshake
-            # at the raw-socket level during CONNECT — before TLS opens.
-            # Credentials must NOT be embedded in the proxy URL or urllib3
-            # will send Basic auth and abort the NTLM negotiation.
-            _SESSION.proxies.update({"http": url, "https": url})
-            adapter = _HttpNtlmAdapter(user, pw)
-            _SESSION.mount("https://", adapter)
-            _SESSION.mount("http://", adapter)
-            print(f"[INFO] Proxy: {url} (NTLM via requests-ntlm2 adapter, user={user})", file=sys.stderr)
+        _PROXY_CURL_ARGS += ["--proxy-ntlm"]
+        print(f"[INFO] Proxy: {url} (NTLM, user={user})", file=sys.stderr)
+    elif auth == "digest":
+        _PROXY_CURL_ARGS += ["--proxy-digest"]
+        print(f"[INFO] Proxy: {url} (Digest, user={user})", file=sys.stderr)
     else:
-        # basic / digest: embed credentials in the proxy URL so that
-        # requests.adapters.HTTPAdapter.proxy_headers() extracts them and
-        # urllib3 sends Proxy-Authorization: Basic on the CONNECT request.
-        # session.auth is NOT used — it targets the inner encrypted request
-        # which the proxy cannot see.
-        authed_url = _proxy_url_with_creds(url, user, pw)
-        _SESSION.proxies.update({"http": authed_url, "https": authed_url})
-        label = "Digest (basic on CONNECT)" if auth == "digest" else "Basic"
-        print(f"[INFO] Proxy: {url} ({label}, user={user})", file=sys.stderr)
+        _PROXY_CURL_ARGS += ["--proxy-basic"]
+        print(f"[INFO] Proxy: {url} (Basic, user={user})", file=sys.stderr)
 
 
 # ── HTTP helpers ───────────────────────────────────────────────────────────────
 
-def _get(url: str, params: dict | None = None, timeout: int = 20) -> dict | None:
-    """GET JSON from *url*, returning parsed dict or None on any error."""
+def _get(
+    url: str,
+    params: dict | None = None,
+    timeout: int = 20,
+    headers: dict | None = None,
+) -> dict | list | None:
+    """
+    GET JSON from *url* using the system curl binary.
+
+    Returns the parsed JSON body (dict or list), None on 404, or None on error.
+    Proxy flags from configure_proxy() are automatically included.
+    """
+    if params:
+        url = f"{url}?{urlencode(params)}"
+
+    cmd = [
+        "curl", "--silent", "--location",
+        "--max-time", str(timeout),
+        "--user-agent", "cve-analyzer/1.0",
+        "-w", "\n%{http_code}",
+    ] + _PROXY_CURL_ARGS
+
+    if headers:
+        for k, v in headers.items():
+            cmd += ["-H", f"{k}: {v}"]
+
+    cmd.append(url)
+
     try:
-        resp = _SESSION.get(url, params=params, timeout=timeout)
-        if resp.status_code == 404:
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout + 5)
+
+        # curl appends "\n{status_code}" via -w; split on last newline
+        if "\n" in result.stdout:
+            body, status_str = result.stdout.rsplit("\n", 1)
+        else:
+            body, status_str = "", result.stdout
+
+        try:
+            status = int(status_str.strip())
+        except ValueError:
+            status = 0
+
+        if status == 404:
             return None
-        resp.raise_for_status()
-        return resp.json()
+        if status == 0 or status >= 400:
+            err = result.stderr.strip() or f"HTTP {status}"
+            print(f"[WARN] GET {url} failed: {err}", file=sys.stderr)
+            return None
+
+        return json.loads(body)
+
+    except subprocess.TimeoutExpired:
+        print(f"[WARN] GET {url} timed out after {timeout}s", file=sys.stderr)
+        return None
+    except json.JSONDecodeError as exc:
+        print(f"[WARN] GET {url} returned invalid JSON: {exc}", file=sys.stderr)
+        return None
+    except FileNotFoundError:
+        print("[ERROR] curl not found — install curl or add it to PATH", file=sys.stderr)
+        sys.exit(1)
     except Exception as exc:
         print(f"[WARN] GET {url} failed: {exc}", file=sys.stderr)
         return None
@@ -221,20 +206,10 @@ def fetch_rh_rhsa_cves(rhsa_id: str) -> list:
     Return a list of CVE summary dicts for *rhsa_id* by querying the
     RedHat CVE endpoint filtered by advisory ID.
     """
-    try:
-        resp = _SESSION.get(
-            RH_ADVISORY_CVE_API,
-            params={"advisory": rhsa_id.upper()},
-            timeout=20,
-        )
-        if resp.status_code == 404:
-            return []
-        resp.raise_for_status()
-        data = resp.json()
-        return data if isinstance(data, list) else []
-    except Exception as exc:
-        print(f"[WARN] RedHat advisory fetch failed for {rhsa_id}: {exc}", file=sys.stderr)
+    data = _get(RH_ADVISORY_CVE_API, params={"advisory": rhsa_id.upper()})
+    if not isinstance(data, list):
         return []
+    return data
 
 
 def fetch_nist_cve(cve_id: str, api_key: str = "") -> dict:
@@ -245,28 +220,14 @@ def fetch_nist_cve(cve_id: str, api_key: str = "") -> dict:
     if elapsed < delay:
         time.sleep(delay - elapsed)
 
-    extra_headers = {}
-    if api_key:
-        extra_headers["apiKey"] = api_key
+    headers = {"apiKey": api_key} if api_key else None
+    data = _get(NIST_API, params={"cveId": cve_id.upper()}, headers=headers)
+    _last_nist_call = time.monotonic()
 
-    try:
-        resp = _SESSION.get(
-            NIST_API,
-            params={"cveId": cve_id.upper()},
-            headers=extra_headers,
-            timeout=20,
-        )
-        _last_nist_call = time.monotonic()
-        if resp.status_code == 404:
-            return {}
-        resp.raise_for_status()
-        data = resp.json()
-        vulns = data.get("vulnerabilities", [])
-        return vulns[0].get("cve", {}) if vulns else {}
-    except Exception as exc:
-        print(f"[WARN] NIST fetch failed for {cve_id}: {exc}", file=sys.stderr)
-        _last_nist_call = time.monotonic()
+    if not isinstance(data, dict):
         return {}
+    vulns = data.get("vulnerabilities", [])
+    return vulns[0].get("cve", {}) if vulns else {}
 
 
 # ── Platform detection ─────────────────────────────────────────────────────────

@@ -1,2 +1,2 @@
-requests>=2.31.0
-requests-ntlm2>=2.0.0
+# No Python HTTP dependencies — all HTTP calls are made via the system curl binary.
+# Proxy authentication (NTLM, Basic, Digest) is handled natively by curl.
