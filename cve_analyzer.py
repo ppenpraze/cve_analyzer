@@ -35,6 +35,7 @@ try:
     from requests_ntlm import HttpNtlmAuth as _HttpNtlmAuth
     _NTLM_AVAILABLE = True
 except ImportError:
+    _HttpNtlmAuth = None   # satisfies static analysis; guarded by _NTLM_AVAILABLE
     _NTLM_AVAILABLE = False
 
 # ── API Endpoints ──────────────────────────────────────────────────────────────
@@ -392,7 +393,7 @@ def platform_component_type(product_name: str, platform: str) -> str:
 
 def pkg_name_only(pkg_str: str) -> str:
     """Strip version/release/arch from an RPM NEVRA string → package name only."""
-    match = re.match(r'^([a-zA-Z0-9_+.-]+?)(?:-\d)', pkg_str)
+    match = re.match(r'^([a-zA-Z0-9_+.-]+?)-\d', pkg_str)
     if match:
         return match.group(1)
     return pkg_str.split("-")[0]
@@ -1120,7 +1121,8 @@ def main() -> None:
     with open(output_path, "w", newline="", encoding="utf-8") as fh:
         writer = csv.DictWriter(
             fh, fieldnames=CSV_FIELDS,
-            quoting=csv.QUOTE_ALL, extrasaction="ignore",
+            quoting=csv.QUOTE_ALL,  # type: ignore[arg-type]
+            extrasaction="ignore",
         )
         writer.writeheader()
         writer.writerows(all_rows)
