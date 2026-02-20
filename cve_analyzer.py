@@ -30,13 +30,23 @@ import requests
 import requests.auth
 from datetime import datetime
 
-# Optional NTLM auth — requires the requests-ntlm package
+# Optional NTLM auth.
+# requests-ntlm2 is preferred: it patches urllib3 to handle NTLM on HTTPS CONNECT
+# tunnels, which requests-ntlm cannot do (urllib3 raises ProxyError before the
+# response hook fires).  Fall back to requests-ntlm if ntlm2 is absent.
 try:
-    from requests_ntlm import HttpNtlmAuth as _HttpNtlmAuth
+    from requests_ntlm2 import HttpNtlmAuth as _HttpNtlmAuth
     _NTLM_AVAILABLE = True
+    _NTLM_PKG = "requests-ntlm2"
 except ImportError:
-    _HttpNtlmAuth = None   # satisfies static analysis; guarded by _NTLM_AVAILABLE
-    _NTLM_AVAILABLE = False
+    try:
+        from requests_ntlm import HttpNtlmAuth as _HttpNtlmAuth
+        _NTLM_AVAILABLE = True
+        _NTLM_PKG = "requests-ntlm"
+    except ImportError:
+        _HttpNtlmAuth = None   # satisfies static analysis; guarded by _NTLM_AVAILABLE
+        _NTLM_AVAILABLE = False
+        _NTLM_PKG = None
 
 # ── API Endpoints ──────────────────────────────────────────────────────────────
 RH_CVE_API          = "https://access.redhat.com/hydra/rest/securitydata/cve/{}.json"
@@ -128,8 +138,9 @@ def configure_proxy(
     if auth == "ntlm":
         if not _NTLM_AVAILABLE:
             print(
-                "[WARN] NTLM proxy auth requested but requests-ntlm is not installed.\n"
-                "       Install it with: pip install requests-ntlm\n"
+                "[WARN] NTLM proxy auth requested but neither requests-ntlm2 nor requests-ntlm is installed.\n"
+                "       Install: pip install requests-ntlm2\n"
+                "       (requests-ntlm2 handles HTTPS CONNECT tunnels; requests-ntlm does not)\n"
                 "       Falling back to Basic authentication.",
                 file=sys.stderr,
             )
@@ -137,7 +148,7 @@ def configure_proxy(
             print(f"[INFO] Proxy: {url} (Basic auth fallback, user={user})", file=sys.stderr)
         else:
             _SESSION.auth = _HttpNtlmAuth(user, pw)
-            print(f"[INFO] Proxy: {url} (NTLM auth, user={user})", file=sys.stderr)
+            print(f"[INFO] Proxy: {url} (NTLM auth via {_NTLM_PKG}, user={user})", file=sys.stderr)
     elif auth == "digest":
         _SESSION.auth = requests.auth.HTTPDigestAuth(user, pw)
         print(f"[INFO] Proxy: {url} (Digest auth, user={user})", file=sys.stderr)

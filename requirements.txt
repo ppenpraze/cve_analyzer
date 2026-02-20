@@ -1,2 +1,2 @@
 requests>=2.31.0
-requests-ntlm>=1.2.0
+requests-ntlm2>=2.0.0
