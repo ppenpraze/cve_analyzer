@@ -20,13 +20,22 @@ Usage:
   python cve_analyzer.py < ids.txt -o report.csv
 """
 
+import os
 import sys
 import csv
 import re
 import time
 import argparse
 import requests
+import requests.auth
 from datetime import datetime
+
+# Optional NTLM auth — requires the requests-ntlm package
+try:
+    from requests_ntlm import HttpNtlmAuth as _HttpNtlmAuth
+    _NTLM_AVAILABLE = True
+except ImportError:
+    _NTLM_AVAILABLE = False
 
 # ── API Endpoints ──────────────────────────────────────────────────────────────
 RH_CVE_API          = "https://access.redhat.com/hydra/rest/securitydata/cve/{}.json"
@@ -65,14 +74,83 @@ _last_nist_call: float = 0.0
 NIST_DELAY_NO_KEY   = 6.5   # 5 req / 30 s without API key
 NIST_DELAY_WITH_KEY = 0.7   # 50 req / 30 s with key
 
+# ── HTTP session ───────────────────────────────────────────────────────────────
+# Single shared session — proxy and auth are configured once via configure_proxy()
+# before any requests are made.
+_SESSION: requests.Session = requests.Session()
+_SESSION.headers["User-Agent"] = "cve-analyzer/1.0"
+
+
+def configure_proxy(
+    proxy_url: str = "",
+    auth_type: str = "",
+    username: str = "",
+    password: str = "",
+) -> None:
+    """
+    Configure the shared HTTP session for proxy access.
+
+    Parameters are resolved in this order: CLI argument → environment variable.
+
+    Environment variables
+    ─────────────────────
+    HTTPS_PROXY          Proxy URL, e.g. http://proxy.corp.com:8080
+                         Also accepts HTTP_PROXY as a fallback.
+    CVE_PROXY_AUTH       Authentication type: basic | ntlm | digest
+                         Defaults to 'basic' when credentials are supplied.
+    CVE_PROXY_USERNAME   Proxy username.
+                         For NTLM use DOMAIN\\username format.
+    CVE_PROXY_PASSWORD   Proxy password.
+
+    Authentication types
+    ─────────────────────
+    basic   HTTP Basic proxy authentication (RFC 7235).
+    digest  HTTP Digest proxy authentication (RFC 7616).
+    ntlm    Microsoft NTLM — requires the requests-ntlm package.
+            Install: pip install requests-ntlm
+            If the package is absent, falls back to basic authentication.
+    """
+    url  = proxy_url or os.environ.get("HTTPS_PROXY") or os.environ.get("HTTP_PROXY") or ""
+    if not url:
+        return
+
+    auth = (auth_type or os.environ.get("CVE_PROXY_AUTH", "basic")).lower().strip()
+    user = username or os.environ.get("CVE_PROXY_USERNAME", "")
+    pw   = password or os.environ.get("CVE_PROXY_PASSWORD", "")
+
+    _SESSION.proxies.update({"http": url, "https": url})
+
+    if not user:
+        print(f"[INFO] Proxy: {url} (no authentication)", file=sys.stderr)
+        return
+
+    if auth == "ntlm":
+        if not _NTLM_AVAILABLE:
+            print(
+                "[WARN] NTLM proxy auth requested but requests-ntlm is not installed.\n"
+                "       Install it with: pip install requests-ntlm\n"
+                "       Falling back to Basic authentication.",
+                file=sys.stderr,
+            )
+            _SESSION.auth = requests.auth.HTTPProxyAuth(user, pw)
+            print(f"[INFO] Proxy: {url} (Basic auth fallback, user={user})", file=sys.stderr)
+        else:
+            _SESSION.auth = _HttpNtlmAuth(user, pw)
+            print(f"[INFO] Proxy: {url} (NTLM auth, user={user})", file=sys.stderr)
+    elif auth == "digest":
+        _SESSION.auth = requests.auth.HTTPDigestAuth(user, pw)
+        print(f"[INFO] Proxy: {url} (Digest auth, user={user})", file=sys.stderr)
+    else:
+        _SESSION.auth = requests.auth.HTTPProxyAuth(user, pw)
+        print(f"[INFO] Proxy: {url} (Basic auth, user={user})", file=sys.stderr)
+
 
 # ── HTTP helpers ───────────────────────────────────────────────────────────────
 
 def _get(url: str, params: dict | None = None, timeout: int = 20) -> dict | None:
     """GET JSON from *url*, returning parsed dict or None on any error."""
     try:
-        resp = requests.get(url, params=params, timeout=timeout,
-                            headers={"User-Agent": "cve-analyzer/1.0"})
+        resp = _SESSION.get(url, params=params, timeout=timeout)
         if resp.status_code == 404:
             return None
         resp.raise_for_status()
@@ -93,11 +171,10 @@ def fetch_rh_rhsa_cves(rhsa_id: str) -> list:
     RedHat CVE endpoint filtered by advisory ID.
     """
     try:
-        resp = requests.get(
+        resp = _SESSION.get(
             RH_ADVISORY_CVE_API,
             params={"advisory": rhsa_id.upper()},
             timeout=20,
-            headers={"User-Agent": "cve-analyzer/1.0"},
         )
         if resp.status_code == 404:
             return []
@@ -117,13 +194,17 @@ def fetch_nist_cve(cve_id: str, api_key: str = "") -> dict:
     if elapsed < delay:
         time.sleep(delay - elapsed)
 
-    headers = {"User-Agent": "cve-analyzer/1.0"}
+    extra_headers = {}
     if api_key:
-        headers["apiKey"] = api_key
+        extra_headers["apiKey"] = api_key
 
     try:
-        resp = requests.get(NIST_API, params={"cveId": cve_id.upper()},
-                            headers=headers, timeout=20)
+        resp = _SESSION.get(
+            NIST_API,
+            params={"cveId": cve_id.upper()},
+            headers=extra_headers,
+            timeout=20,
+        )
         _last_nist_call = time.monotonic()
         if resp.status_code == 404:
             return {}
@@ -918,6 +999,33 @@ def main() -> None:
         "--no-nist", action="store_true",
         help="Skip NIST NVD lookups (faster, but less complete data).",
     )
+
+    proxy = parser.add_argument_group(
+        "proxy",
+        "HTTP proxy settings. CLI flags override the corresponding environment variables.",
+    )
+    proxy.add_argument(
+        "--proxy", default="", metavar="URL",
+        help="Proxy URL, e.g. http://proxy.corp.com:8080  (env: HTTPS_PROXY)",
+    )
+    proxy.add_argument(
+        "--proxy-auth", default="", metavar="TYPE",
+        choices=["basic", "ntlm", "digest"],
+        help="Proxy authentication type: basic | ntlm | digest  (env: CVE_PROXY_AUTH)",
+    )
+    proxy.add_argument(
+        "--proxy-user", default="", metavar="USER",
+        help="Proxy username. For NTLM use DOMAIN\\\\username  (env: CVE_PROXY_USERNAME)",
+    )
+    proxy.add_argument(
+        "--proxy-password", default="", metavar="PASS",
+        help=(
+            "Proxy password  (env: CVE_PROXY_PASSWORD). "
+            "Prefer the environment variable over this flag to avoid "
+            "exposing credentials in process listings."
+        ),
+    )
+
     parser.add_argument(
         "--inventory", default="", metavar="FILE",
         help=(
@@ -927,6 +1035,14 @@ def main() -> None:
         ),
     )
     args = parser.parse_args()
+
+    # ── Proxy (must be configured before any HTTP calls) ──────────────────────
+    configure_proxy(
+        proxy_url=args.proxy,
+        auth_type=args.proxy_auth,
+        username=args.proxy_user,
+        password=args.proxy_password,
+    )
 
     # ── Collect IDs from CLI + stdin ──────────────────────────────────────────
     raw_tokens: list[str] = list(args.ids)
