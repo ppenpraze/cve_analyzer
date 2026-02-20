@@ -29,6 +29,7 @@ import argparse
 import requests
 import requests.auth
 from datetime import datetime
+from urllib.parse import urlparse, urlunparse, quote as _url_quote
 
 # Optional NTLM auth.
 # requests-ntlm2 is preferred: it patches urllib3 to handle NTLM on HTTPS CONNECT
@@ -92,6 +93,25 @@ _SESSION: requests.Session = requests.Session()
 _SESSION.headers["User-Agent"] = "cve-analyzer/1.0"
 
 
+def _proxy_url_with_creds(url: str, user: str, pw: str) -> str:
+    """
+    Embed credentials into a proxy URL so urllib3's ProxyManager sends them on
+    the CONNECT tunnel request.
+
+    This is the only path that works for HTTPS targets: session.auth is applied
+    to the inner (encrypted) request after the tunnel opens, which the proxy
+    never sees.  Credentials in the URL are read by urllib3 before CONNECT.
+    """
+    parsed = urlparse(url)
+    safe_user = _url_quote(user, safe="")
+    safe_pw   = _url_quote(pw,   safe="")
+    host = parsed.hostname or ""
+    netloc = f"{safe_user}:{safe_pw}@{host}"
+    if parsed.port:
+        netloc += f":{parsed.port}"
+    return urlunparse(parsed._replace(netloc=netloc))
+
+
 def configure_proxy(
     proxy_url: str = "",
     auth_type: str = "",
@@ -115,11 +135,16 @@ def configure_proxy(
 
     Authentication types
     ─────────────────────
-    basic   HTTP Basic proxy authentication (RFC 7235).
-    digest  HTTP Digest proxy authentication (RFC 7616).
-    ntlm    Microsoft NTLM — requires the requests-ntlm package.
-            Install: pip install requests-ntlm
-            If the package is absent, falls back to basic authentication.
+    basic   HTTP Basic proxy authentication.
+            Credentials are embedded in the proxy URL so urllib3 sends them
+            on the CONNECT tunnel (the only path that works for HTTPS targets).
+    digest  HTTP Digest proxy authentication.
+            Credentials are embedded as basic for the CONNECT tunnel (digest
+            challenge-response over CONNECT is not supported by urllib3).
+    ntlm    Microsoft NTLM — requires the requests-ntlm2 package.
+            Install: pip install requests-ntlm2
+            requests-ntlm2 patches urllib3 to perform the NTLM handshake on
+            the CONNECT tunnel.  Falls back to basic if the package is absent.
     """
     url  = proxy_url or os.environ.get("HTTPS_PROXY") or os.environ.get("HTTP_PROXY") or ""
     if not url:
@@ -129,9 +154,8 @@ def configure_proxy(
     user = username or os.environ.get("CVE_PROXY_USERNAME", "")
     pw   = password or os.environ.get("CVE_PROXY_PASSWORD", "")
 
-    _SESSION.proxies.update({"http": url, "https": url})
-
     if not user:
+        _SESSION.proxies.update({"http": url, "https": url})
         print(f"[INFO] Proxy: {url} (no authentication)", file=sys.stderr)
         return
 
@@ -140,21 +164,31 @@ def configure_proxy(
             print(
                 "[WARN] NTLM proxy auth requested but neither requests-ntlm2 nor requests-ntlm is installed.\n"
                 "       Install: pip install requests-ntlm2\n"
-                "       (requests-ntlm2 handles HTTPS CONNECT tunnels; requests-ntlm does not)\n"
-                "       Falling back to Basic authentication.",
+                "       requests-ntlm2 patches urllib3 to handle NTLM on HTTPS CONNECT tunnels.\n"
+                "       Falling back to Basic (embedding credentials in proxy URL).",
                 file=sys.stderr,
             )
-            _SESSION.auth = requests.auth.HTTPProxyAuth(user, pw)
-            print(f"[INFO] Proxy: {url} (Basic auth fallback, user={user})", file=sys.stderr)
+            authed_url = _proxy_url_with_creds(url, user, pw)
+            _SESSION.proxies.update({"http": authed_url, "https": authed_url})
+            print(f"[INFO] Proxy: {url} (Basic fallback, user={user})", file=sys.stderr)
         else:
+            # requests-ntlm2 patches urllib3's connection pool to perform the
+            # multi-step NTLM handshake on the CONNECT tunnel itself.
+            # The proxy URL must NOT have embedded credentials so urllib3 doesn't
+            # short-circuit to Basic before ntlm2's hook can intercept.
+            _SESSION.proxies.update({"http": url, "https": url})
             _SESSION.auth = _HttpNtlmAuth(user, pw)
             print(f"[INFO] Proxy: {url} (NTLM auth via {_NTLM_PKG}, user={user})", file=sys.stderr)
-    elif auth == "digest":
-        _SESSION.auth = requests.auth.HTTPDigestAuth(user, pw)
-        print(f"[INFO] Proxy: {url} (Digest auth, user={user})", file=sys.stderr)
     else:
-        _SESSION.auth = requests.auth.HTTPProxyAuth(user, pw)
-        print(f"[INFO] Proxy: {url} (Basic auth, user={user})", file=sys.stderr)
+        # basic / digest: embed credentials in the proxy URL.
+        # For HTTPS targets urllib3 sends Proxy-Authorization: Basic on the
+        # CONNECT request, which is the only place the proxy can see it.
+        # (session.auth is applied to the inner encrypted request — invisible
+        # to the proxy.)
+        authed_url = _proxy_url_with_creds(url, user, pw)
+        _SESSION.proxies.update({"http": authed_url, "https": authed_url})
+        label = "Digest (basic on CONNECT)" if auth == "digest" else "Basic"
+        print(f"[INFO] Proxy: {url} ({label}, user={user})", file=sys.stderr)
 
 
 # ── HTTP helpers ───────────────────────────────────────────────────────────────
