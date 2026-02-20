@@ -26,6 +26,7 @@ import csv
 import re
 import time
 import json
+import random
 import argparse
 import subprocess
 from datetime import datetime
@@ -63,10 +64,26 @@ CSV_FIELDS = [
     'URL',
 ]
 
-# ── Rate-limiting for NIST ────────────────────────────────────────────────────
+# ── Rate-limiting ─────────────────────────────────────────────────────────────
+# RedHat Security Data API — no published limit, but empirically >2 req/s
+# triggers SSL-layer connection drops (curl error 35).  0.5 s keeps us safe.
+_last_rh_call:   float = 0.0
+RH_DELAY               = 0.5   # seconds between RedHat API calls
+
+# NIST NVD API 2.0 — published limits:
+#   no key  →  5 req / 30 s  →  1 per 6 s  (we use 6.5 for headroom)
+#   API key → 50 req / 30 s  →  1 per 0.6 s
 _last_nist_call: float = 0.0
-NIST_DELAY_NO_KEY   = 6.5   # 5 req / 30 s without API key
-NIST_DELAY_WITH_KEY = 0.7   # 50 req / 30 s with key
+NIST_DELAY_NO_KEY   = 6.5
+NIST_DELAY_WITH_KEY = 0.7
+
+# ── Retry / backoff ───────────────────────────────────────────────────────────
+# Statuses that are transient and worth retrying.
+_RETRYABLE_STATUSES = {429, 500, 502, 503, 504}
+# Maximum number of *retries* (so total attempts = _MAX_RETRIES + 1).
+_MAX_RETRIES   = 4
+# Base delay in seconds; doubles each retry: 1 s, 2 s, 4 s, 8 s.
+_RETRY_BACKOFF = 1.0
 
 # ── Proxy curl args ────────────────────────────────────────────────────────────
 # Built once by configure_proxy(); prepended to every curl invocation.
@@ -140,8 +157,12 @@ def _get(
     """
     GET JSON from *url* using the system curl binary.
 
-    Returns the parsed JSON body (dict or list), None on 404, or None on error.
-    Proxy flags from configure_proxy() are automatically included.
+    Retries up to _MAX_RETRIES times with exponential backoff + jitter on
+    transient errors (5xx, 429, connection failures, timeouts).  404 and other
+    definitive 4xx responses are returned immediately without retrying.
+
+    Returns the parsed JSON body (dict or list), None on 404, or None if all
+    attempts are exhausted.  Proxy flags from configure_proxy() are included.
     """
     if params:
         url = f"{url}?{urlencode(params)}"
@@ -159,53 +180,92 @@ def _get(
 
     cmd.append(url)
 
-    try:
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout + 5)
-
-        # curl appends "\n{status_code}" via -w; split on last newline
-        if "\n" in result.stdout:
-            body, status_str = result.stdout.rsplit("\n", 1)
-        else:
-            body, status_str = "", result.stdout
+    last_err = ""
+    for attempt in range(_MAX_RETRIES + 1):
+        if attempt > 0:
+            delay = _RETRY_BACKOFF * (2 ** (attempt - 1)) + random.uniform(0, 0.5)
+            print(
+                f"[INFO] Retry {attempt}/{_MAX_RETRIES} for {url} "
+                f"(after {delay:.1f}s) — last error: {last_err}",
+                file=sys.stderr,
+            )
+            time.sleep(delay)
 
         try:
-            status = int(status_str.strip())
-        except ValueError:
-            status = 0
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout + 5)
 
-        if status == 404:
+            # curl appends "\n{status_code}" via -w; split on the last newline
+            if "\n" in result.stdout:
+                body, status_str = result.stdout.rsplit("\n", 1)
+            else:
+                body, status_str = "", result.stdout
+
+            try:
+                status = int(status_str.strip())
+            except ValueError:
+                status = 0
+
+            if status == 404:
+                return None
+
+            if status in (200, 201):
+                try:
+                    return json.loads(body)
+                except json.JSONDecodeError as exc:
+                    # Malformed JSON is not a transient error; don't retry.
+                    print(f"[WARN] GET {url} returned invalid JSON: {exc}", file=sys.stderr)
+                    return None
+
+            if status in _RETRYABLE_STATUSES or status == 0:
+                last_err = result.stderr.strip() or f"HTTP {status}"
+                continue  # go to next attempt
+
+            # Definitive client error (e.g. 400, 401, 403) — don't retry.
+            print(f"[WARN] GET {url} failed: HTTP {status}", file=sys.stderr)
             return None
-        if status == 0 or status >= 400:
-            err = result.stderr.strip() or f"HTTP {status}"
-            print(f"[WARN] GET {url} failed: {err}", file=sys.stderr)
+
+        except subprocess.TimeoutExpired:
+            last_err = f"timeout after {timeout}s"
+            continue  # retryable
+        except FileNotFoundError:
+            print("[ERROR] curl not found — install curl or add it to PATH", file=sys.stderr)
+            sys.exit(1)
+        except Exception as exc:
+            print(f"[WARN] GET {url} failed: {exc}", file=sys.stderr)
             return None
 
-        return json.loads(body)
+    print(
+        f"[WARN] GET {url} failed after {_MAX_RETRIES + 1} attempts: {last_err}",
+        file=sys.stderr,
+    )
+    return None
 
-    except subprocess.TimeoutExpired:
-        print(f"[WARN] GET {url} timed out after {timeout}s", file=sys.stderr)
-        return None
-    except json.JSONDecodeError as exc:
-        print(f"[WARN] GET {url} returned invalid JSON: {exc}", file=sys.stderr)
-        return None
-    except FileNotFoundError:
-        print("[ERROR] curl not found — install curl or add it to PATH", file=sys.stderr)
-        sys.exit(1)
-    except Exception as exc:
-        print(f"[WARN] GET {url} failed: {exc}", file=sys.stderr)
-        return None
+
+def _throttle(last_ref: list[float], delay: float) -> None:
+    """Sleep until *delay* seconds have elapsed since last_ref[0], then update it."""
+    elapsed = time.monotonic() - last_ref[0]
+    if elapsed < delay:
+        time.sleep(delay - elapsed)
+    last_ref[0] = time.monotonic()
+
+
+# Mutable containers so _throttle can update them without 'global' in callers.
+_rh_clock   = [_last_rh_call]
+_nist_clock = [_last_nist_call]
 
 
 def fetch_rh_cve(cve_id: str) -> dict:
-    """Fetch CVE data from RedHat Security Data API."""
+    """Fetch CVE data from RedHat Security Data API (rate-limited)."""
+    _throttle(_rh_clock, RH_DELAY)
     return _get(RH_CVE_API.format(cve_id.upper())) or {}
 
 
 def fetch_rh_rhsa_cves(rhsa_id: str) -> list:
     """
     Return a list of CVE summary dicts for *rhsa_id* by querying the
-    RedHat CVE endpoint filtered by advisory ID.
+    RedHat CVE endpoint filtered by advisory ID (rate-limited).
     """
+    _throttle(_rh_clock, RH_DELAY)
     data = _get(RH_ADVISORY_CVE_API, params={"advisory": rhsa_id.upper()})
     if not isinstance(data, list):
         return []
@@ -213,17 +273,10 @@ def fetch_rh_rhsa_cves(rhsa_id: str) -> list:
 
 
 def fetch_nist_cve(cve_id: str, api_key: str = "") -> dict:
-    """Fetch CVE data from NIST NVD API 2.0 with rate-limiting."""
-    global _last_nist_call
-    delay = NIST_DELAY_WITH_KEY if api_key else NIST_DELAY_NO_KEY
-    elapsed = time.monotonic() - _last_nist_call
-    if elapsed < delay:
-        time.sleep(delay - elapsed)
-
+    """Fetch CVE data from NIST NVD API 2.0 (rate-limited)."""
+    _throttle(_nist_clock, NIST_DELAY_WITH_KEY if api_key else NIST_DELAY_NO_KEY)
     headers = {"apiKey": api_key} if api_key else None
     data = _get(NIST_API, params={"cveId": cve_id.upper()}, headers=headers)
-    _last_nist_call = time.monotonic()
-
     if not isinstance(data, dict):
         return {}
     vulns = data.get("vulnerabilities", [])
